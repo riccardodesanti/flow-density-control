@@ -1,4 +1,4 @@
-name: maxent
+name: genexp
 channels:
   - defaults
   - https://repo.anaconda.com/pkgs/main
@@ -187,4 +187,3 @@ dependencies:
       - websocket-client==1.8.0
       - widgetsnbextension==4.0.13
       - zipp==3.21.0
-prefix: /home/mvlastelica/miniconda3/envs/maxent

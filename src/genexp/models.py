@@ -83,11 +83,6 @@ class FlowModel(torch.nn.Module):
         adoat = adt / at
         return (vf - adoat * x) / (bt * (adoat * bt - bdt))
 
-    
-    @property
-    def device(self):
-        return self.model.device
-
 
 class SDE:
     def sde(self, t):

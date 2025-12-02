@@ -1,21 +1,18 @@
 import numpy as np
-import copy
-from tqdm import tqdm
 from omegaconf import OmegaConf
 
 import torch
 from torch.utils.data import Dataset, ConcatDataset
 
 from genexp.sampling import EulerMaruyamaSampler, Sampler, Sample
-import typing
+from genexp.models import FlowModel
 from typing import List, Callable, Optional
 
 
-# TODO change all traj_graph
 class LeanAdjointSolverFlow:
     """Solver as per adjoint matching paper."""
 
-    def __init__(self, gen_model: FlowModel, grad_reward_fn: Callable, grad_f_k_fn: Optional[Callable] = None, device: torch.Device = None):
+    def __init__(self, gen_model: FlowModel, grad_reward_fn: Callable, grad_f_k_fn: Optional[Callable] = None, device: Optional[torch.device] = None):
         self.model = gen_model
         self.interpolant_scheduler = gen_model.interpolant_scheduler
         self.grad_reward_fn = grad_reward_fn
@@ -33,15 +30,15 @@ class LeanAdjointSolverFlow:
             eps_pred = 2 * v_pred - alpha_dot/(alpha + dt) * x_t.adjoint
 
             g_term = (adj_t * eps_pred).sum()
-            v = torch.autograd.grad(g_term, x_t, retain_graph=False)[0]
+            v = torch.autograd.grad(g_term, x_t.adjoint, retain_graph=False)[0]
 
-        assert v.shape == x_t.shape
+        assert v.shape == x_t.adjoint.shape
 
         adj_tmh = adj_t + dt * v
         if self.grad_f_k_fn is not None:
-            grad_f_k = self.grad_f_k_fn(x_t, t + dt).to(adj_t.device)
+            grad_f_k = self.grad_f_k_fn(x_t.full, t + dt).to(adj_t.device)
 
-            assert grad_f_k.shape == x_t.shape
+            assert grad_f_k.shape == x_t.adjoint.shape
             adj_tmh = adj_t + dt * v - dt * grad_f_k
             
         return adj_tmh.detach(), v_pred.detach()
@@ -73,18 +70,15 @@ class LeanAdjointSolverFlow:
             traj_v_pred.append(v_pred.detach())
         
         res = {
-                't': ts[1:], # (T,)
-                'alpha': alpha_s[1:], # (T,)
-                'alpha_dot': alpha_dot_s[1:], # (T,)
-                'traj_x': trajectories[1:], # array-like of len T
-                'traj_adj': torch.stack(trajs_adj), # (T, data_shape)
-                'traj_v_pred': torch.stack(traj_v_pred), # (T, data_shape)
+                't': ts.flip(0)[:-1], # (T,)
+                'traj_x': trajectories[:-1], # array-like of len T
+                'traj_adj': torch.stack(trajs_adj).flip(0), # (T, data_shape)
+                'traj_v_pred': torch.stack(traj_v_pred).flip(0), # (T, data_shape)
             }
 
         assert res['traj_adj'].shape == res['traj_v_pred'].shape
         assert res['traj_adj'].shape[0] == res['t'].shape[0]
         assert len(res['traj_x']) == res['t'].shape[0]
-        assert res['alpha'].shape[0] == res['t'].shape[0] and res['alpha_dot'].shape[0] == res['t'].shape[0]
         assert res['t'].shape[0] == ts.shape[0] - 1
         return res
 
@@ -92,8 +86,7 @@ class LeanAdjointSolverFlow:
 class AMDataset(Dataset):
     def __init__(self, solver_info):
         solver_info = self.detach_all(solver_info)
-        self.t = solver_info['ts'] # (T,)
-        self.sigmas = solver_info['sigmas'] # (T,)
+        self.t = solver_info['t'] # (T,)
         self.traj_x = solver_info['traj_x'] # trajectories (T, batch_shape)
         self.traj_adj = solver_info['traj_adj'] # (T, adjoint_shape)
         self.traj_v_base = solver_info['traj_v_pred'] # (T, adjoint_shape)
@@ -107,7 +100,6 @@ class AMDataset(Dataset):
     def __getitem__(self, idx):
         return {
             'ts': self.t,
-            'sigmas': self.sigma_t,
             'traj_x': self.traj_x,
             'traj_adj': self.traj_adj,
             'traj_v_base': self.traj_v_base,
@@ -162,10 +154,11 @@ def create_timestep_subset(total_steps, final_percent=0.25, sample_percent=0.25)
 def adj_matching_loss(v_base, v_fine, adj, sigma):
     """Adjoint matching loss for FM"""
     diff = v_fine - v_base
-    term_diff = (2 / sigma[:,None,None]) * diff
-    term_adj = sigma[:,None,None] * adj
+    sigma = torch.broadcast_to(sigma, diff.shape)
+    term_diff = (2 / sigma) * diff
+    term_adj = sigma * adj
     term_difference = term_diff - term_adj
-    term_difference = torch.sum(torch.square(term_difference), dim=[1, 2])
+    term_difference = torch.sum(torch.square(term_difference), dim=[d for d in range(1, term_difference.dim())])
     loss = torch.mean(term_difference)
     return loss 
 
@@ -175,11 +168,11 @@ class AMTrainerFlow:
             config: OmegaConf,
             model: FlowModel,
             base_model: FlowModel,
-            grad_reward_fn: callable,
-            grad_f_k_fn: callable = None,
-            device: torch.device = None,
+            grad_reward_fn: Callable,
+            grad_f_k_fn: Optional[Callable] = None,
+            device: Optional[torch.device] = None,
             verbose: bool = False,
-            sampler: Sampler = None
+            sampler: Optional[Sampler] = None
         ):
         # Config
         self.config = config
@@ -227,8 +220,8 @@ class AMTrainerFlow:
         N = self.sampling_config.num_samples
         T = self.sampling_config.num_integration_steps + 1
         trajectories = self.sampler.sample_trajectories(N=N, T=T)
-        ts = torch.linspace(0., 1., T).to(self.base_model.device)
-        sigmas = self.base_model.interpolant_scheduler.memoryless_sigma(ts)
+        ts = torch.linspace(0., 1., T).to(self.sampler.device)
+        sigmas = self.base_model.interpolant_scheduler.memoryless_sigma_t(ts)
         return trajectories, ts, sigmas
 
 
@@ -247,18 +240,11 @@ class AMTrainerFlow:
             with torch.no_grad():
                 while True:
                     trajectories, ts, sigmas = self.sample_trajectories()
-                    if trajectories[0].num_nodes() <= self.max_nodes:
-                        break  
-                    print(f"Rerolling: got {trajectories[0].num_nodes()} nodes (> {self.max_nodes})")
 
             # graph_trajectories is a list of the intermediate graphs
             solver_info = solver.solve(trajectories=trajectories, ts=ts)
             # add sigma_t to solver_info
             solver_info['sigmas'] = sigmas
-            
-            if (~solver_info['row_mask']).all():
-                print("Row mask is all True, skipping sample")
-                continue
             dataset = AMDataset(solver_info=solver_info)
             datasets.append(dataset)
 
@@ -272,13 +258,9 @@ class AMTrainerFlow:
         """Training step."""
 
         ts = sample['t'].to(self.device)
-        sigmas = sample['sigma_t'].to(self.device)
-        alpha = sample['alpha'].to(self.device)
-        alpha_dot = sample['alpha_dot'].to(self.device)
-        traj_g = [g.to(self.device) for g in sample['traj_graph']]
+        traj_g = [g.to(self.device) for g in sample['traj_x']]
         traj_adj = sample['traj_adj'].to(self.device)
         traj_v_base = sample['traj_v_base'].to(self.device)
-        row_mask = sample['row_mask'].to(self.device)
 
         # Get index for time steps to calculate adjoint matching loss
         idxs = create_timestep_subset(ts.shape[0])
@@ -286,47 +268,27 @@ class AMTrainerFlow:
         v_base = []
         v_fine = []
         adj = []
-        sigma = []
-        
+        sigma = self.base_model.interpolant_scheduler.memoryless_sigma_t(ts)
+
         for idx in idxs:
             t = ts[idx]
-            sigma_t = sigmas[idx]
             adj_t = traj_adj[idx]
             v_base_t = traj_v_base[idx]
             g_base_t = traj_g[idx]
-            alpha_t = alpha[idx]
-            alpha_dot_t = alpha_dot[idx]
 
-            node_batch_idx = torch.zeros(g_base_t.num_nodes(), dtype=torch.long)
-
-            # predict the destination of the trajectory given the current time-point
-            dst_dict = self.fine_model.vector_field(
-                g_base_t, 
-                t=torch.full((g_base_t.batch_size,), t, device=g_base_t.device),
-                node_batch_idx=node_batch_idx,
-                upper_edge_mask=g_base_t.edata['ue_mask'],
-                apply_softmax=True,
-                remove_com=True
-            )
-            # take integration step for positions
-            x_1 = dst_dict['x']
-            x_t = g_base_t.ndata['x_t']
-
-            v_fine_t = self.fine_model.vector_field.vector_field(x_t, x_1, alpha_t, alpha_dot_t)
+            v_fine_t = self.fine_model.velocity_field(g_base_t.full, t)
             
-            v_base_t = v_base_t[row_mask]
-            v_fine_t = v_fine_t[row_mask]
-            adj_t = adj_t[row_mask]
+            v_base_t = v_base_t
+            v_fine_t = v_fine_t
+            adj_t = adj_t
             
             v_base.append(v_base_t)
             v_fine.append(v_fine_t)
             adj.append(adj_t)
-            sigma.append(sigma_t)
         
         # stack the tensors
         v_base = torch.stack(v_base, dim=0)
         v_fine = torch.stack(v_fine, dim=0)
-        sigma = torch.stack(sigma, dim=0)
         adj = torch.stack(adj, dim=0)
         
         loss = adj_matching_loss(
@@ -348,14 +310,6 @@ class AMTrainerFlow:
         # loss clapping
         if self.clip_loss > 0.0:
             loss = torch.clamp(loss, min=0.0, max=self.clip_loss)
-
-        if self.verbose and self.config.clip_grad_norm > 0.0:
-            total_norm = 0
-            for p in self.fine_model.parameters():
-                param_norm = p.grad.detach().data.norm(2)
-                total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
-            print(f"Before Clipping Norm: {total_norm:.6f}")
 
         if self.clip_grad_norm > 0.0:
             torch.nn.utils.clip_grad_norm_(self.fine_model.parameters(), self.clip_grad_norm)

@@ -343,14 +343,15 @@ class Sample(object):
 
 
 class Sampler(object):
-    def __init__(self, model: FlowModel, data_shape=None):
+    def __init__(self, model: FlowModel, data_shape=None, device=None):
         self.model = model
         self.data_shape = data_shape
         self.solver = None
+        self.device = device
     
     
     def sample_init_dist(self, N=1, device=None):
-        device = model.device if device is None else device
+        device = self.device if device is None else device
         return torch.randn(N, *self.data_shape, device=device)
 
 
@@ -358,7 +359,7 @@ class Sampler(object):
         """
         Sample N trajectories of length T using memoryless sampling
         """
-        x0 = self.sample_init_dist(N)
+        x0 = self.sample_init_dist(N, device=device)
 
         if not sample_jumps:
             ts = torch.linspace(0, 1, T).to(x0.device)
@@ -379,20 +380,20 @@ class Sampler(object):
 
 
 class EulerMaruyamaSampler(Sampler):
-    def __init__(self, model: FlowModel, data_shape, noise_func=None):
-        super().__init__(model, data_shape=data_shape)
+    def __init__(self, model: FlowModel, data_shape, noise_func=None, device=None):
+        super().__init__(model, data_shape=data_shape, device=device)
         self.solver = EulerMaruyamaSolver(model, noise_func=noise_func)
 
 
 class MemorylessSampler(Sampler):
-    def __init__(self, model: FlowModel, data_shape):
-        super().__init__(model, data_shape=data_shape)
+    def __init__(self, model: FlowModel, data_shape, device=None):
+        super().__init__(model, data_shape=data_shape, device=device)
         self.solver = MemorylessFlowSolver(model)
     
 
 class DDIMSampler(Sampler):
-    def __init__(self, model: DiffusionModel, data_shape):
-        super().__init__(model)
+    def __init__(self, model: DiffusionModel, data_shape, device=None):
+        super().__init__(model, device=device)
         self.data_shape = data_shape
         self.solver = DDIMSolver(model)
     
