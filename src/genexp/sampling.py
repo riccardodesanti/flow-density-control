@@ -5,21 +5,21 @@ import torch
 from .models import DiffusionModel, FlowModel, SDE, VPSDE
 
 class Solver(abc.ABC):
-    def solve(self, x0, ts=None, steps=50, store_traj=False):
-        device = next(self.model.parameters()).device
+    def solve(self, x0, ts=None, steps=50, store_traj=False, device=None):
+        device = x0.device if device is None else device
         dtype = x0.dtype
         self.device = device
         if ts is None:
             ts = torch.linspace(0, 1, steps+1, dtype=dtype, device=device)
         if store_traj:
-            traj = [x0.cpu().detach()]
+            traj = [x0]
         else:
             traj = None
         xt = x0
         for t, tph in zip(ts[:-1], ts[1:]):
             xt = self.step(xt=xt, t=t, tph=tph)
             if traj is not None:
-                traj.append(xt.cpu().detach())
+                traj.append(xt)
         return xt, {'traj': traj}
 
 
@@ -90,7 +90,6 @@ def ddim_step(x, t, tm1, model,
     x = x.to(device)
     t_in = torch.tensor(t, device=device).expand(x.size(0))[:, None]
 
-    # print(x.device, t_in.device)
     eps_pred = model(x, t_in)
 
     atm1, btm1 = noise_func(tm1)
@@ -340,6 +339,14 @@ class Sample(object):
     @adjoint.setter
     def adjoint(self, value):
         self.obj = value
+    
+
+    def detach_all(self):
+        self.obj = self.obj.detach()
+    
+
+    def to(self, device: torch.device):
+        return Sample(self.obj.to(device))
 
 
 class Sampler(object):
@@ -355,7 +362,7 @@ class Sampler(object):
         return torch.randn(N, *self.data_shape, device=device)
 
 
-    def sample_trajectories(self, N=1, T=1000, sample_jumps=True, device=None):
+    def sample_trajectories(self, N=1, T=1000, sample_jumps=False, device=None):
         """
         Sample N trajectories of length T using memoryless sampling
         """
@@ -373,10 +380,11 @@ class Sampler(object):
             # order the ts ascending
             ts = torch.sort(ts, descending=False)[0].to(x0.device)
 
-        xts, info = self.solver.solve(x0, ts=ts, store_traj=True)
+        xts, info = self.solver.solve(x0, ts=ts, store_traj=True, device=x0.device)
         traj = info['traj']
+        traj = [Sample(t) for t in traj]
         
-        return torch.stack(traj).permute(1,0,2), ts # flip to (B,T,d)
+        return traj, ts
 
 
 class EulerMaruyamaSampler(Sampler):
