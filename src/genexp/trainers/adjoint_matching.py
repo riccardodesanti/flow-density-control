@@ -109,14 +109,15 @@ class AMDataset(Dataset):
         for key, value in solver_info.items():
             if isinstance(value, torch.Tensor):
                 solver_info[key] = value.detach()
+            if isinstance(value, Sample):
+                value.detach_all()
             elif isinstance(value, list):
-                for g in value:
-                    for k in g.ndata.keys():
-                        if isinstance(g.ndata[k], torch.Tensor):
-                            g.ndata[k] = g.ndata[k].detach()
-                    for k in g.edata.keys():
-                        if isinstance(g.edata[k], torch.Tensor):
-                            g.edata[k] = g.edata[k].detach()
+                for i, v in enumerate(value):
+                    if isinstance(v, torch.Tensor):
+                        value[i] = v.detach()
+                    if isinstance(v, Sample):
+                        v.detach_all()
+            
         return solver_info
 
 
@@ -154,7 +155,8 @@ def create_timestep_subset(total_steps, final_percent=0.25, sample_percent=0.25)
 def adj_matching_loss(v_base, v_fine, adj, sigma):
     """Adjoint matching loss for FM"""
     diff = v_fine - v_base
-    sigma = torch.broadcast_to(sigma, diff.shape)
+    new_shape = (diff.shape[0],) + (1,) * (diff.dim() - 1)
+    sigma = sigma.reshape(new_shape)
     term_diff = (2 / sigma) * diff
     term_adj = sigma * adj
     term_difference = term_diff - term_adj
@@ -201,7 +203,7 @@ class AMTrainerFlow:
         if sampler is None:
             if 'data_shape' not in self.sampling_config:
                 raise ValueError('Either pass an explicit sampler or pass a data_shape in the sampling config (config.sampling)')
-            self.sampler = EulerMaruyamaSampler(model, self.sampling_config.data_shape)
+            self.sampler = EulerMaruyamaSampler(base_model, self.sampling_config.data_shape)
         else:
             self.sampler = sampler
 
@@ -219,9 +221,10 @@ class AMTrainerFlow:
     def sample_trajectories(self):
         N = self.sampling_config.num_samples
         T = self.sampling_config.num_integration_steps + 1
+        self.sampler.model = self.fine_model
         trajectories, ts = self.sampler.sample_trajectories(N=N, T=T)
         ts = ts.to(self.sampler.device)
-        sigmas = self.base_model.interpolant_scheduler.memoryless_sigma_t(ts)
+        sigmas = self.fine_model.interpolant_scheduler.memoryless_sigma_t(ts)
         return trajectories, ts, sigmas
 
 
@@ -256,7 +259,7 @@ class AMTrainerFlow:
     def train_step(self, sample):
         """Training step."""
 
-        ts = sample['t'].to(self.device)
+        ts = sample['ts'].to(self.device)
         traj_g = [g.to(self.device) for g in sample['traj_x']]
         traj_adj = sample['traj_adj'].to(self.device)
         traj_v_base = sample['traj_v_base'].to(self.device)
@@ -267,7 +270,7 @@ class AMTrainerFlow:
         v_base = []
         v_fine = []
         adj = []
-        sigma = self.base_model.interpolant_scheduler.memoryless_sigma_t(ts)
+        sigma = self.base_model.interpolant_scheduler.memoryless_sigma_t(ts[idxs])
 
         for idx in idxs:
             t = ts[idx]
@@ -276,11 +279,7 @@ class AMTrainerFlow:
             g_base_t = traj_g[idx]
 
             v_fine_t = self.fine_model.velocity_field(g_base_t.full, t)
-            
-            v_base_t = v_base_t
-            v_fine_t = v_fine_t
-            adj_t = adj_t
-            
+                        
             v_base.append(v_base_t)
             v_fine.append(v_fine_t)
             adj.append(adj_t)

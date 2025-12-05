@@ -176,5 +176,5 @@ cython_debug/
 ckpt
 
 venv
-
+notebooks/lightning_logs
 TODO.md

@@ -2,9 +2,7 @@ import os
 import logging
 import abc
 
-import dgl
 import torch
-import dgl
 
 
 from diffusers import StableDiffusionPipeline
@@ -63,7 +61,7 @@ class FlowModel(torch.nn.Module):
         self.interpolant_scheduler = interpolant_scheduler
 
     
-    def forward(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor):
+    def forward(self, x: torch.Tensor, t: torch.Tensor):
         # expand t if needed
         if t.ndim == 0 or len(t) < len(x):
             t = t.expand(x.size(0)).view(-1, 1)
@@ -71,12 +69,12 @@ class FlowModel(torch.nn.Module):
         return self.model(torch.cat([x, t], dim=1))
 
     
-    def velocity_field(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
+    def velocity_field(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """Flow models predict the velocity field by default"""
         return self(x, t)
 
 
-    def score_func(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
+    def score_func(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         vf = velocity_field(x, t)
         at, adt = self.interpolant_scheduler.interpolants(t)
         bt, bdt = self.interpolant_scheduler.interpolants_prime(t)
@@ -178,7 +176,7 @@ class DiffusionModel(FlowModel):
         return self.sde
 
     
-    def velocity_field(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
+    def velocity_field(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         s = self.score_func(x, t)
         at, bt = self.interpolant_scheduler.interpolants(t)
         atp, btp = self.interpolant_scheduler.interpolants_prime(t)
@@ -187,7 +185,7 @@ class DiffusionModel(FlowModel):
         return etat * x + bt * (etat * bt - btp) * s
         
 
-    def score_func(self, x: torch.Tensor | dgl.DGLGraph, t: torch.Tensor) -> torch.Tensor:
+    def score_func(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         """
         Diffusion models predict the error function by default, with time going from 1 (noise) to 0 (data)
         Instead we want time to go from 0 (noise) to 1 (data)
