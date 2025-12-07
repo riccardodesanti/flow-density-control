@@ -29,6 +29,8 @@ class UnionOperatorTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
                  traj_len=100,
                  critic_steps=100,
                  critic_lr=1e-5):
+    
+        raise NotImplementedError()
         
         self.lmbda = lmbda
         self.num_traj_MC = num_traj_MC

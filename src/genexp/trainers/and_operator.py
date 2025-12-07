@@ -1,25 +1,25 @@
 from ..models import DiffusionModel
-from .adjoint_matching_trajectory import AdjointMatchingTrajectoryFinetuningTrainer
+from .adjoint_matching import AMTrainerFlow
+from ..sampling import Sampler
 import torch
 
-class AndOperatorTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
-    def __init__(self, model: DiffusionModel, 
-                 lr,  
-                 traj_samples_per_stage, 
-                 data_shape, 
-                 grad_reward = None,
-                 finetune_steps=100, 
-                 batch_size=32, 
-                 device='cuda',
-                 rew_type='score-matching',
-                 base_model=None,
-                 pre_trained_model_1=None,
-                 pre_trained_model_2=None,
-                 alpha_div=[1.0,1.0],
-                 traj_len=100,
-                 lmbda=1.0,
-                 clip_grad_norm=None,
-                 running_cost=False):
+from omegaconf import OmegaConf
+from typing import Callable, Optional
+
+class AndOperatorTrainerTriple(AMTrainerFlow):
+    def __init__(self,
+                 config: OmegaConf,
+                 model: DiffusionModel,
+                 base_model: DiffusionModel,
+                 pre_trained_model_1: DiffusionModel,
+                 pre_trained_model_2: DiffusionModel,
+                 grad_reward: Optional[Callable] = None,
+                 device: Optional[torch.device] = None,
+                 sampler: Optional[Sampler] = None):
+    
+        rew_type = config.get('rew_type', 'score_matching')
+        self.lmbda = lmbda = config.get('lmbda', 1.)
+        alpha_div = config.get('alpha_div', [1., 1., 1.])
         
         if rew_type == 'score-matching':
             print("Using first variation of double KL as reward, lambda:", lmbda)
@@ -35,17 +35,9 @@ class AndOperatorTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
             self.lmbda = lmbda
         else:
             raise NotImplementedError
-        super().__init__(model, grad_reward_fn, grad_f_k_trajectory, lr, traj_samples_per_stage, 
-                         data_shape, finetune_steps, batch_size, device=device, 
-                         base_model=base_model, traj_len=traj_len, clip_grad_norm=clip_grad_norm, running_cost=running_cost)
-    
 
-    def update_reward(self):
-        self.grad_reward_fn = lambda x: -self.base_model.score_func(x, torch.tensor(0.0, device=x.device).float().detach())*self.lmbda
+        super().__init__(config.adjoint_matching, model, base_model, grad_reward_fn, grad_traj, device=device, sampler=sampler)
+    
 
     def update_base_model(self):
         self.base_model.load_state_dict(self.fine_model.state_dict())
-
-    def set_lambda(self, lmbda):
-        self.lmbda = lmbda
-        self.update_reward()

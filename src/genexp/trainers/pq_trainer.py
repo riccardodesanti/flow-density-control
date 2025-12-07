@@ -4,7 +4,7 @@ An example application is the Or-operator or Renyi divergence.
 """
 
 from ..models import DiffusionModel
-from .adjoint_matching import AdjointMatchingFinetuningTrainer
+from .adjoint_matching import AMTrainerFlow
 import torch
 from ..likelihood import MultiItoDensODE
 from tqdm import tqdm

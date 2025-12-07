@@ -31,6 +31,8 @@ class Wasserstein1Trainer(AdjointMatchingFinetuningTrainer):
                  critic_lr=1e-5
                  ):
         
+        raise NotImplementedError()
+        
         self.lmbda = lmbda
         self.num_traj_MC = num_traj_MC
         self.traj_len = traj_len

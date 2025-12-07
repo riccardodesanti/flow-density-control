@@ -1,45 +1,39 @@
 from ..models import DiffusionModel
-from .adjoint_matching_trajectory import AdjointMatchingTrajectoryFinetuningTrainer, sample_trajectories_ddpm
+from .adjoint_matching import AMTrainerFlow
+from ..sampling import Sampler, sample_trajectories_ddpm
 import torch
 from torch import autograd
-import torch.nn as nn
 from torch.autograd import grad  
-import torch.nn.functional as F
 import torch.nn as nn
-from torch import autograd
+import torch.nn.functional as F
 
-class InterpolationOperatorTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
-    def __init__(self, model: DiffusionModel, 
-                 lr,  
-                 traj_samples_per_stage, 
-                 data_shape, 
-                 A_inv,
-                 grad_reward = None,
-                 finetune_steps=100, 
-                 batch_size=32, 
-                 device='cuda',
-                 rew_type='score-matching',
-                 base_model=None,
-                 pre_trained_model_1=None,
-                 pre_trained_model_2=None,
-                 alpha_div=[1.0,1.0],
-                 lmbda=1.0,
-                 clip_grad_norm=None,
-                 running_cost=False,
-                 num_traj_MC=15,
-                 traj_len=100,
-                 critic_steps=100,
-                 gp_lambda=5.0,
-                 critic_lr=1e-5):
+from omegaconf import OmegaConf
+from typing import Callable, Optional
+
+
+class InterpolationOperatorTrainer(AMTrainerFlow):
+    def __init__(self,
+                 config: OmegaConf,
+                 model: DiffusionModel,
+                 base_model: DiffusionModel,
+                 pre_trained_model_1: DiffusionModel,
+                 pre_trained_model_2: DiffusionModel,
+                 A_inv: torch.Tensor,
+                 grad_reward: Optional[Callable] = None,
+                 device: Optional[torch.device] = None,
+                 sampler: Optional[Sampler] = None):
         
-        self.lmbda = lmbda
-        self.num_traj_MC = num_traj_MC
-        self.traj_len = traj_len
-        self.A_inv = A_inv 
+        self.A_inv = A_inv
+        lmbda = self.lmbda = config.get('lmbda', 1.)
+        alpha_div = config.get('alpha_div', [1., 1.])
+        self.num_traj_MC = config.get('num_traj_MC', 15)
+        self.traj_len = config.get('traj_len', 100)
+        self.critic_steps = config.get('critic_steps', 100)
+        self.gp_lambda = config.get('gp_lambda', 5.)
+        self.critic_lr = config.get('critic_lr', 1e-5)
+        rew_type = config.get('rew_type', 'score_matching')
+
         self.saved_grad_reward = grad_reward
-        self.critic_steps = critic_steps
-        self.gp_lambda = gp_lambda
-        self.critic_lr = critic_lr
         
         if rew_type == 'score-matching':
             print("Using first variation of double KL as reward, lambda:", lmbda)
@@ -52,9 +46,7 @@ class InterpolationOperatorTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
             self.lmbda = lmbda
         else:
             raise NotImplementedError
-        super().__init__(model, grad_reward_fn, grad_f_k_trajectory, lr, traj_samples_per_stage, 
-                         data_shape, finetune_steps, batch_size, device=device, 
-                         base_model=base_model, traj_len=traj_len, clip_grad_norm=clip_grad_norm, running_cost=running_cost)
+        super().__init__(config.adjoint_matching, model, base_model, grad_reward_fn, grad_f_k_trajectory, device=device, sampler=sampler)
     
 
     def compute_wasserstein1_grad(self, x, pre_trained_model):
@@ -148,12 +140,6 @@ class InterpolationOperatorTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
         ).to(self.device)
     
 
-    def update_reward(self):
-       self.grad_reward_fn = lambda x: self.saved_grad_reward(x) * self.lmbda
-
     def update_base_model(self):
         self.base_model.load_state_dict(self.fine_model.state_dict())
 
-    def set_lambda(self, lmbda):
-        self.lmbda = lmbda
-        self.update_reward()

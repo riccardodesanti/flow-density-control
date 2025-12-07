@@ -1,40 +1,36 @@
 from ..models import DiffusionModel
-from .adjoint_matching import AdjointMatchingFinetuningTrainer
-import torch
-from genexp.trainers.adjoint_matching import AdjointMatchingFinetuningTrainer, sample_trajectories_ddpm
-import torch.nn.functional as F
+from ..sampling import Sampler, sample_trajectories_ddpm
+from .adjoint_matching import AMTrainerFlow
 
-class RiskAverseKlTrainer(AdjointMatchingFinetuningTrainer):
-    def __init__(self, model: DiffusionModel, 
-                 lr, 
-                 traj_samples_per_stage, 
-                 data_shape, 
-                 finetune_steps=100, 
-                 batch_size=32, 
-                 device='cuda',
-                 rew_type='score-matching',
-                 base_model=None,
-                 pre_trained_model=None,
-                 alpha_div=1.0,
-                 num_traj_MC=15,
-                 traj_len=100,
-                 lmbda=1.0,
-                 alpha_cvar=0.95,
-                 loss_function=None,
-                 clip_grad_norm=None):
+import torch
+import torch.nn.functional as F
+from omegaconf import OmegaConf
+
+from typing import Callable, Optional
+
+class RiskAverseKlTrainer(AMTrainerFlow):
+    def __init__(self,
+                 config: OmegaConf,
+                 model: DiffusionModel,
+                 base_model: DiffusionModel,
+                 pre_trained_model: DiffusionModel,
+                 device: Optional[torch.device] = None,
+                 sampler: Optional[Sampler] = None,
+                 loss_function: Optional[Callable] = None):
         
-        self.lmbda = lmbda
-        self.alpha_cvar = alpha_cvar
-        self.num_traj_MC = num_traj_MC
-        self.traj_len = traj_len
+        self.lmbda = config.get('lmbda', 1.)
+        self.alpha_cvar = config.get('alpha_cvar', 0.95)
+        self.num_traj_MC = config.get('num_traj_MC', 0.95)
+        self.traj_len = traj_len = config.get('traj_len', 0.95)
+        alpha_div = config.get('alpha_div', 1.)
+        rew_type = config.get('rew_type', 'score-matching')
+        self.lmbda = lmbda = config.get('lmbda')
 
         if rew_type == 'score-matching':
             grad_reward_fn = lambda x: - lmbda * (self.compute_superquantile_grad(x, base_model, loss_function) - alpha_div * (base_model.score_func(x, torch.tensor(0, device=x.device).float().detach()) - pre_trained_model.score_func(x, torch.tensor(0, device=x.device).float().detach())))
         else:
             raise NotImplementedError
-        super().__init__(model, grad_reward_fn, lr, traj_samples_per_stage, 
-                         data_shape, finetune_steps, batch_size, device=device, 
-                         base_model=base_model, traj_len=traj_len, clip_grad_norm=clip_grad_norm)
+        super().__init__(config.adjoint_matching, model, base_model, grad_reward_fn, None, device=device, sampler=sampler)
     
 
     def compute_superquantile_grad(self, x, base_model, loss_function):
@@ -48,7 +44,6 @@ class RiskAverseKlTrainer(AdjointMatchingFinetuningTrainer):
             trajs1 = sample_trajectories_ddpm(base_model, x0, self.traj_len) 
             trajs1 = trajs1[0]
             samples = trajs1[:, -1, :]
-            # beta_star = self.estimate_beta_star_torch(samples, loss_function, alpha_cvar=alpha_cvar, gamma=gamma)
             sample_loss = loss_function(samples)
             beta_star = torch.quantile(sample_loss, self.alpha_cvar)
 
@@ -56,14 +51,6 @@ class RiskAverseKlTrainer(AdjointMatchingFinetuningTrainer):
         if not x.requires_grad:
             x = x.clone().detach().requires_grad_(True)
         torch.set_grad_enabled(True)
-
-        # SMOOTHED CVaR
-        # x_loss_val = loss_function(x)
-        # beta_star = beta_star.to(x.device)
-        # factor = 1.0 / ((1.0 - alpha_cvar) * (1.0 + torch.exp(-gamma * (x_loss_val - beta_star))))
-        # grad_r = torch.autograd.grad(x_loss_val.sum(), x, create_graph=False, retain_graph=True)[0]
-        # factor = factor.unsqueeze(-1)
-        # final_gradient = factor * grad_r
 
         # UN-SMOOTHED CVaR
         loss_x = loss_function(x)                               
@@ -99,13 +86,8 @@ class RiskAverseKlTrainer(AdjointMatchingFinetuningTrainer):
         print("estimated CVaR during opt:", est_CVaR.item())
 
         return beta.detach()
-
-    def update_reward(self):
-        self.grad_reward_fn = lambda x: -self.base_model.score_func(x, torch.tensor(0.0, device=x.device).float().detach())*self.lmbda
+    
 
     def update_base_model(self):
         self.base_model.load_state_dict(self.fine_model.state_dict())
 
-    def set_lambda(self, lmbda):
-        self.lmbda = lmbda
-        self.update_reward()

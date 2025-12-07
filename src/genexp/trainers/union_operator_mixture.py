@@ -28,6 +28,8 @@ class UnionOperatorMixtureTrainer(AdjointMatchingTrajectoryFinetuningTrainer):
                  critic_steps=100,
                  critic_lr=1e-5,
                  temp_and_clamp=False):
+    
+        raise NotImplementedError()
         
         self.lmbda = lmbda
         self.num_traj_MC = num_traj_MC

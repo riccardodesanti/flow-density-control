@@ -178,3 +178,7 @@ ckpt
 venv
 notebooks/lightning_logs
 TODO.md
+wandb
+output
+sweep_config_fdc.yaml
+scripts/sweep.sh

@@ -1,5 +1,187 @@
 import torch
 
+import argparse
+from omegaconf import OmegaConf
+import random
+
+def seed_everything(seed: int):
+    """Seed all random generators."""
+    # For random:
+    random.seed(seed)
+
+    # For numpy:
+    np.random.seed(seed)
+
+    # For PyTorch:
+    torch.manual_seed(seed)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run ALM with optional parameter overrides")
+    # Settings
+    parser.add_argument("--config", type=str, default="configs/example_fdc.yaml",
+                        help="Path to config file")
+    parser.add_argument("--use_wandb", action='store_true',
+                        help="Use wandb, default: false")
+    parser.add_argument("--verbose", action='store_true', 
+                        help="Verbose output, default: false")
+    parser.add_argument("--save_model", action='store_true',
+                        help="Save the model, default: false")
+    parser.add_argument("--save_samples", action='store_true',
+                        help="Create animation of the samples and save the samples, default: false")
+    parser.add_argument("--save_plots", action='store_true',
+                        help="Save plots of rewards and constraints, default: false")
+    parser.add_argument("--plotting_freq", type=int, default=1,
+                        help="Plotting frequency")
+    # Reward
+    parser.add_argument("--reward", type=str, default="dipole",
+                        help="Override reward in config")
+    # FlowMol arguments
+    flowmol_choices = ['qm9_ctmc', 'qm9_gaussian', 'qm9_simplexflow', 'qm9_dirichlet']
+    # But just implemented for qm9_ctmc
+    parser.add_argument('--flow_model', type=str, choices=flowmol_choices,
+                        help='pretrained model to be used')
+    # Maximum Entropy Parameters
+    parser.add_argument("--reward_lambda", type=float,
+                        help="Override reward_lambda in config")
+    parser.add_argument("--lmbda", type=str, choices=['const', 'variance', 'cosine'],
+                        help="Override lambda_t schedule in config")
+    parser.add_argument("--eta", type=float, help="Override eta multiplier for projection")
+    parser.add_argument("--epsilon", type=float,
+                        help="Override score epsilon in config")
+    parser.add_argument("--lr", type=float,
+                        help="Override adjoint_matching.lr in config")
+    parser.add_argument("--clip_grad_norm",  type=float,
+                        help="Override adjoint_matching.clip_grad_norm in config")
+    parser.add_argument("--clip_loss",  type=float,
+                        help="Override adjoint_matching.clip_loss in config")
+    parser.add_argument("--batch_size", type=int,
+                        help="Override adjoint_matching.batch_size in config")
+    parser.add_argument("--samples_per_update", type=int,
+                        help="Override adjoint_matching.num_samples in config")
+    parser.add_argument("--num_integration_steps", type=int,
+                        help="Override adjoint_matching.num_integration_steps in config")
+    parser.add_argument("--finetune_steps", type=int,
+                        help="Override adjoint_matching.finetune_steps in config")
+    parser.add_argument("--num_iterations", type=int,
+                        help="Override number of iterations")
+    parser.add_argument("--num_md_iterations", type=int,
+                        help="Override outer loop iterations")
+    parser.add_argument("--hamdiv_n", type=int,
+                        help="Override n_molecules for hamdiv calculation")
+    parser.add_argument("--base_model", type=str,
+                        help="Override base model")
+    parser.add_argument("--seed", type=int,
+                        help="Override seed")
+    parser.add_argument('--n_metrics', type=int,
+                        help='Override n_molecules for metrics calculation')
+    parser.add_argument('--gamma_falloff', type=float, help='Override falloff multiplier for gamma')
+    parser.add_argument('--gamma_const', type=float, help='Override constant denominator addition for gamma')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--traj', action='store_true', help='compute trajectory rewards for maximum entropy method')
+    parser.add_argument('--no_traj', action='store_true', help='override trajectory rewards')
+    parser.add_argument('--beta', type=float, help='weight of KL penalty term')
+    parser.add_argument('--gamma', type=float, help='stepsize multiplier')
+    parser.add_argument('--constraint', type=str, help='constraint function')
+    parser.add_argument('--threshold', type=float, help='lower threshold for validity')
+    parser.add_argument('--nodes', type=int, default=1, help='Number of nodes for pytorch lightning')
+    parser.add_argument('--gpus', type=int, default=1, help='Number of gpus per node for pytorch lightning')
+    parser.add_argument('--sigma', type=float, help='Sigma for vendi computation')
+    parser.add_argument('--dpo_finetune_steps', type=int, help='Finetune steps for dpo')
+    parser.add_argument('--dpo_num_iterations', type=int, help='number of iterations for dpo')
+    parser.add_argument('--dpo_lr', type=float, help='learning rate for dpo')
+    parser.add_argument('--dpo_beta', type=float, help='beta for KL for DPO')
+
+    return parser.parse_args()
+
+
+def update_config_with_args(config, args):
+
+    max_config = config.max_ent if 'max_ent' in config else config
+    am_config = max_config.adjoint_matching
+
+    # Reward arguments
+    if args.reward is not None:
+        config.reward = {}
+        config.reward.fn = args.reward
+    # FlowMol arguments
+    if args.flow_model is not None:
+        config.flowmol.model = args.flow_model
+    # Adjoint Matching Parameters
+    if args.reward_lambda is not None:
+        config.reward_lambda = args.reward_lambda
+    if args.lmbda is not None:
+        max_config.lmbda = args.lmbda
+    if args.gamma_falloff is not None:
+        max_config.gamma_falloff = args.gamma_falloff
+    if args.gamma_const is not None:
+        max_config.gamma_const = args.gamma_const
+    if args.eta is not None:
+        max_config.eta = args.eta
+    if args.constraint is not None:
+        config.constraint = {}
+        config.constraint.fn = args.constraint
+    if args.threshold is not None:
+        config.constraint.threshold = args.threshold
+    if args.num_md_iterations is not None:
+        max_config.num_md_iterations = args.num_md_iterations
+    if args.epsilon is not None:
+        max_config.epsilon = args.epsilon
+    if args.beta is not None:
+        max_config.beta = args.beta
+    if args.gamma is not None:
+        max_config.gamma = args.gamma
+    if args.lr is not None:
+        am_config.lr = args.lr
+    if args.clip_grad_norm is not None:
+        am_config.clip_grad_norm = args.clip_grad_norm
+    if args.clip_loss is not None:
+        am_config.clip_loss = args.clip_loss
+    if args.batch_size is not None:
+        am_config.batch_size = args.batch_size
+    if args.samples_per_update is not None:
+        am_config.sampling.num_samples = args.samples_per_update
+    if args.num_integration_steps is not None:
+        am_config.sampling.num_integration_steps = args.num_integration_steps
+    if args.finetune_steps is not None:
+        am_config.finetune_steps = args.finetune_steps
+    if args.num_iterations is not None:
+        am_config.num_iterations = args.num_iterations
+    if args.num_md_iterations is not None:
+        am_config.num_md_iterations = args.num_md_iterations
+    if args.hamdiv_n is not None:
+        config.hamdiv_n = args.hamdiv_n
+    if args.base_model is not None:
+        config.base_model = args.base_model
+    if args.seed is not None:
+        config.seed = args.seed
+    if args.n_metrics is not None:
+        config.metrics.n_metrics = args.n_metrics
+    if args.traj:
+        max_config.traj = True
+    if args.sigma is not None:
+        config.metrics.sigma = args.sigma
+    
+    if args.dpo_lr is not None:
+        config.dpo.lr = args.dpo_lr
+    if args.dpo_num_iterations is not None:
+        config.dpo.num_iterations = args.dpo_num_iterations
+    if args.dpo_finetune_steps is not None:
+        config.dpo.finetune_steps = args.dpo_finetune_steps
+    if args.dpo_beta is not None:
+        config.dpo.beta = args.dpo_beta
+    
+    if args.no_traj is not None and args.no_traj:
+        max_config.traj = False
+    
+    config.use_wandb = (args.use_wandb is not None and args.use_wandb) or ('use_wandb' in config and config.use_wandb)
+
+    if 'seed' not in config or config.seed == -1:
+        config.seed = random.randint(1, 4096)
+    return config
+
+
+
 def sig_fn_ddpm(diff_model, t,tm1):
     """sigma_t for DDIM so that it becomes DDPM."""
     at, sig = diff_model.sde.get_alpha_sigma(t)
