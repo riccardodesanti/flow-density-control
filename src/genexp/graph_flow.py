@@ -1,7 +1,9 @@
-from genexp.models import FlowModel, InterpolantScheduler, AdjointState
-from genexp.sampling import Sampler
+from genexp.models import FlowModel, InterpolantScheduler
+from genexp.sampling import Sampler, Sample
 from flowmol import FlowMol
 from flowmol.models.interpolant_scheduler import InterpolantScheduler as FlowMolInterpolantScheduler
+import torch
+import dgl
 
 
 class GraphInterpolantScheduler(InterpolantScheduler):
@@ -45,13 +47,13 @@ class GraphFlowModel(FlowModel):
         super().__init__(model, GraphInterpolantScheduler(model.interpolant_scheduler))
     
 
-    def velocity_field(self, g, t, ue_mask=None):
-        node_batch_idx = torch.zeros(g_t.num_nodes(), dtype=torch.long)
-        upper_edge_mask = g_t.edata['ue_mask'] if ue_mask is None else ue_mask
+    def velocity_field(self, x, t, ue_mask=None):
+        node_batch_idx = torch.zeros(x.num_nodes(), dtype=torch.long)
+        upper_edge_mask = x.edata['ue_mask'] if ue_mask is None else ue_mask
 
-        dst_dict = model.vector_field(
-            g_t, 
-            t=torch.full((g_t.batch_size,), t, device=g_t.device),
+        dst_dict = self.model.vector_field(
+            x, 
+            t=torch.full((x.batch_size,), t, device=x.device),
             node_batch_idx=node_batch_idx,
             upper_edge_mask=upper_edge_mask,
             apply_softmax=True,
@@ -60,11 +62,45 @@ class GraphFlowModel(FlowModel):
 
         # take integration step for positions
         x_1 = dst_dict['x']
-        x_t = g_t.ndata['x_t']
+        x_t = x.ndata['x_t']
+        alpha, alpha_dot = self.model.interpolant_scheduler.alpha_t(t), self.model.interpolant_scheduler.alpha_t_prime(t)
 
-        v_pred = model.vector_field.vector_field(x_t, x_1, alpha, alpha_dot)
+        v_pred = self.model.vector_field.vector_field(x_t, x_1, alpha, alpha_dot)
         return v_pred
 
+
+class GraphSample(Sample):
+    def __init__(self, graph: dgl.DGLGraph):
+        self.obj = graph
+
+    
+    @property
+    def full(self):
+        return self.obj
+    
+
+    @full.setter
+    def full(self, value):
+        self.obj = value
+
+
+    @property
+    def adjoint(self):
+        return self.obj.ndata['x_t']
+    
+
+    @adjoint.setter
+    def adjoint(self, value):
+        self.obj = value
+    
+
+    def detach_all(self):
+        self.obj = self.obj.detach()
+    
+
+    def to(self, device: torch.device):
+        return GraphSample(self.obj.to(device))
+    
 
 class GraphEulerMaruyamaSampler(Sampler):
     def __init__(self, model: GraphFlowModel, sampler_type=None):
@@ -76,7 +112,7 @@ class GraphEulerMaruyamaSampler(Sampler):
         return self.model.model.sample_n_atoms(N)
 
 
-    def sample_trajectories(self, N=1, T=1000, n_atoms=None, sampler_type=None):
+    def sample_trajectories(self, N=1, T=1000, sample_jumps=False, device=None, n_atoms=None, sampler_type=None):
         """
         Sample N trajectories of length T using memoryless sampling
         """
@@ -93,4 +129,4 @@ class GraphEulerMaruyamaSampler(Sampler):
 
         trajs = [GraphSample(g) for g in graph_trajectories]
 
-        return graph_trajectories
+        return trajs, torch.linspace(0, 1, T)

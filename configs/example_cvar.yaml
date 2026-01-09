@@ -1,0 +1,18 @@
+#### FDC ####
+seed: 2
+alpha_cvar: 00.95
+num_traj_MC: 40
+traj_len: 40
+alpha_div: 1.
+lmbda: 1.
+num_md_iterations: 3 # number of outer (mirror descent) steps
+adjoint_matching:
+  num_iterations: 10 # how often the adjoint matching is run after the bandit step (if use_bandit is set to false this is the only optimization step)
+  batch_size: 1 # batch_size is both used for number samples - sampled per batch an then for updates
+  clip_grad_norm: 0.4 # float - if 0.0 no clipping is done
+  clip_loss: 1e5 # float - if 0.0 no clipping is done
+  lr: 0.0001
+  finetune_steps: 10
+  sampling:
+    num_samples: 40
+    num_integration_steps: 40

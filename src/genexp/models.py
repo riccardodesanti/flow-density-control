@@ -70,7 +70,7 @@ class FlowModel(torch.nn.Module):
 
 
     def score_func(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        vf = velocity_field(x, t)
+        vf = self.velocity_field(x, t)
         at, adt = self.interpolant_scheduler.interpolants(t)
         bt, bdt = self.interpolant_scheduler.interpolants_prime(t)
         adoat = adt / at

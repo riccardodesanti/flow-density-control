@@ -18,13 +18,12 @@ class RiskAverseKlTrainer(AMTrainerFlow):
                  sampler: Optional[Sampler] = None,
                  loss_function: Optional[Callable] = None):
         
-        self.lmbda = config.get('lmbda', 1.)
         self.alpha_cvar = config.get('alpha_cvar', 0.95)
-        self.num_traj_MC = config.get('num_traj_MC', 0.95)
-        self.traj_len = traj_len = config.get('traj_len', 0.95)
+        self.num_traj_MC = config.get('num_traj_MC', 4)
+        self.traj_len = config.get('traj_len', 40)
         alpha_div = config.get('alpha_div', 1.)
         rew_type = config.get('rew_type', 'score-matching')
-        self.lmbda = lmbda = config.get('lmbda')
+        self.lmbda = lmbda = config.get('lmbda', 1.)
 
         if rew_type == 'score-matching':
             grad_reward_fn = lambda x: - lmbda * (self.compute_superquantile_grad(x, base_model, loss_function) - alpha_div * (base_model.score_func(x, torch.tensor(0, device=x.device).float().detach()) - pre_trained_model.score_func(x, torch.tensor(0, device=x.device).float().detach())))

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import torchdiffeq
 import torch
 from .models import DiffusionModel, FlowModel, SDE, VPSDE
+from typing import Sequence
 
 class Solver(abc.ABC):
     def solve(self, x0, ts=None, steps=50, store_traj=False, device=None):
@@ -362,7 +363,7 @@ class Sampler(object):
         return torch.randn(N, *self.data_shape, device=device)
 
 
-    def sample_trajectories(self, N=1, T=1000, sample_jumps=False, device=None):
+    def sample_trajectories(self, N=1, T=1000, sample_jumps=False, device=None) -> tuple[Sequence[Sample], torch.Tensor]:
         """
         Sample N trajectories of length T using memoryless sampling
         """
